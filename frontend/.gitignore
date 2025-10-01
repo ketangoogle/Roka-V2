@@ -1,0 +1,15 @@
+# Environment
+.env
+.venv
+venv/
+env/
+__pycache__/
+
+# IDE settings
+.idea/
+.vscode/
+node_modules/
+dist/
+build/
+.DS_Store
+npm-debug.log*
