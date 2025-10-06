@@ -1,228 +1,164 @@
-# ROKA Voice Idea Agent
+Of course. Here is the updated `README.md` file with every `curl` command written out in full detail, without using the `$AUTH` and `$BASE_URL` shorthand variables.
 
-End-to-end voice assistant for collecting and curating hotel improvement ideas, with user-scoped sessions, file uploads to GCS, and idea approval workflow.
+This makes each example fully self-contained and easy to copy and paste for testing.
 
-## Overview
-- Backend: Quart (async Flask-like) + SQLAlchemy (async) + Cloud SQL Connector + GCS
-- Frontend: Vite + React + LiveKit components
-- Realtime Agent: LiveKit + Gemini Live
+-----
 
-## Prerequisites
-- Python 3.11+
-- Node 18+
-- Google Cloud project with:
-  - Cloud SQL (PostgreSQL)
-  - Service account with Cloud SQL + Storage permissions
-  - GCS bucket for uploads
+# ROKA Agent - Backend API Documentation 🚀
 
-## Environment Variables (Backend)
-Create `ROka/backend/.env` with:
-```
-CLOUD_SQL_CONNECTION_NAME=project:region:instance
-DB_USER=postgres
-DB_PASS=your_password
-DB_NAME=your_db
-BUCKET_NAME=your_bucket
-SIGNER_SERVICE_ACCOUNT_EMAIL=svc-account@project.iam.gserviceaccount.com
-LIVEKIT_API_KEY=...
-LIVEKIT_API_SECRET=...
-```
+This document provides all the necessary information for the frontend team to connect to and interact with the ROKA Voice Idea Agent backend. The backend is live and hosted on Google Cloud Run.
 
-### Google Cloud credentials (service account key)
-You must run the backend with a service account JSON that can sign V4 URLs and access Cloud SQL/Storage.
+## Base URL
 
-1) Place your key file
-```
-mkdir -p ROka/backend/.secrets
-# copy your downloaded key into this folder, e.g.
-# ROka/backend/.secrets/mvsargotaj-secret.json
-```
+All API endpoints are relative to the following base URL:
 
-2) Export env vars before starting the backend (choose one):
-- If you start the server from ROka/backend (relative path):
-```
-export GOOGLE_APPLICATION_CREDENTIALS=.secrets/mvsargotaj-secret.json
-export SIGNER_SERVICE_ACCOUNT_EMAIL=$(jq -r '.client_email' .secrets/mvsargotaj-secret.json)
-export BUCKET_NAME=your-bucket-name
-```
-- Or absolute path (recommended):
-```
-export GOOGLE_APPLICATION_CREDENTIALS=/home/ketanraaz/web/Google_Adk/ROka/backend/.secrets/mvsargotaj-secret.json
-export SIGNER_SERVICE_ACCOUNT_EMAIL=$(jq -r '.client_email' /home/ketanraaz/web/Google_Adk/ROka/backend/.secrets/mvsargotaj-secret.json)
-export BUCKET_NAME=your-bucket-name
-```
+  * **Live URL:** `https://roka-agent-backend-684535434104.us-central1.run.app`
 
-If you don’t have `jq`, open the JSON and copy `client_email` into `SIGNER_SERVICE_ACCOUNT_EMAIL`.
+-----
 
-3) Verify and test
-```
-echo "$GOOGLE_APPLICATION_CREDENTIALS"
-echo "$SIGNER_SERVICE_ACCOUNT_EMAIL"
-echo "$BUCKET_NAME"
+## Authentication
 
-# then (with backend running)
-curl -s -X POST "http://localhost:5001/generate-upload-url" \
-  -H "Content-Type: application/json" \
-  -d '{"file_name":"test.png","content_type":"image/png","session_id":"YOUR_SESSION_ID"}'
-```
-If configured correctly, the response includes `upload_url` and `download_url`.
+The API uses a two-part authentication system.
 
-## Install & Run
-Backend
-```
-cd ROka/backend
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+### 1\. User Login
 
-# One-time: create tables
-python3 init_db.py
+To begin, the user must log in through the frontend. The frontend will send a `POST` request to the public `/login` endpoint.
 
-# Run server (default http://localhost:5001)
-python3 server.py
-```
+  * **Username**: `admin`
+  * **Password**: `password@123`
 
-Frontend
-```
-cd ROka/frontend
-npm install
+If the credentials are correct, the backend will return a success message. The frontend should then grant the user access to the main application.
 
-# set backend URL (e.g.) in .env
-echo 'VITE_BACKEND_URL=http://localhost:5001' > .env
+### 2\. API Request Authentication
 
-npm run dev
-```
+After the user is logged in, **every subsequent API call** to a protected endpoint must be authenticated using **HTTP Basic Auth**.
 
-## Seeded Users (auto-seeded on backend start)
-- id: `ketan`, username: `Ketan`, password: `ketan123`
-- id: `sharadha`, username: `Sharadha`, password: `sharadha123`
+The frontend must include an `Authorization` header with every request.
 
-Frontend login expects the correct password before creating/joining a session. Sessions are stored with `created_by` and filtered per user.
+  * **Header**: `Authorization: Basic YWRtaW46cGFzc3dvcmRAMTIz`
+      * (The value is the Base64 encoding of `admin:password@123`)
 
-## Data Model (key tables)
-- `users(id, username, password, created_at)`
-- `sessions(id, name, created_by, created_at)`
-- `messages(id, session_id, role, text_content, file_url, timestamp)`
-- `curated_ideas(id, session_id, created_by, idea_title, explanation, category, expected_impact, estimated_cost, urgency, status, submitted_at, approved, reviewer_notes, reviewed_at)`
+-----
 
-## File Uploads
-- Client requests a signed URL, uploads file directly to GCS, then calls `confirm-upload` to persist message in DB
-- When an idea is submitted, backend mirrors any local `uploads/<session_id>/` files to
-  `gs://$BUCKET_NAME/uploads/<session_id>/<safe_idea_title>/...`
+## API Endpoints 🛠️
 
-## Key API Endpoints (with curl)
-Base URL: `http://localhost:5001`
+Here are the available endpoints with fully detailed `curl` commands for testing.
 
-Health
-```
-curl -s "$BASE/health"
-curl -s "$BASE/health/db"
-```
+### Health Checks (Public)
 
-Sessions
-```
-# List sessions for a user
-curl -s "$BASE/sessions?user_id=ketan"
+These endpoints require no authentication. They are used to verify that the service is online.
 
-# Create session for a user
-curl -s -X POST "$BASE/session" -H 'Content-Type: application/json' \
-  -d '{"user_id":"ketan"}'
+  * **`GET /health`**
+      * Checks if the web server is running.
+      * **`curl` Example:**
+        ```bash
+        curl "https://roka-agent-backend-684535434104.us-central1.run.app/health"
+        ```
+  * **`GET /health/db`**
+      * Checks if the database connection is healthy.
+      * **`curl` Example:**
+        ```bash
+        curl "https://roka-agent-backend-684535434104.us-central1.run.app/health/db"
+        ```
 
-# Session details
-curl -s "$BASE/session/details/YOUR_SESSION_ID"
+### Login (Public)
 
-# Session message history
-curl -s "$BASE/session/YOUR_SESSION_ID"
-```
+  * **`POST /login`**
+      * Authenticates the user. The frontend should call this when the user submits the login form.
+      * **`curl` Example:**
+        ```bash
+        curl -X POST "https://roka-agent-backend-684535434104.us-central1.run.app/login" \
+          -H "Content-Type: application/json" \
+          -d '{"username": "admin", "password": "password@123"}'
+        ```
 
-LiveKit Token
-```
-curl -s "$BASE/getToken?session_id=YOUR_SESSION_ID&name=Ketan"
-```
+### Sessions (Protected)
 
-Uploads
-```
-# 1) Generate signed URL
-curl -s -X POST "$BASE/generate-upload-url" -H 'Content-Type: application/json' \
-  -d '{"file_name":"note.png","content_type":"image/png","session_id":"YOUR_SESSION_ID"}'
+  * **`GET /sessions`**
+      * Lists all sessions created by a specific user (`ketan` or `shraddha`).
+      * **`curl` Example:**
+        ```bash
+        curl -u "admin:password@123" "https://roka-agent-backend-684535434104.us-central1.run.app/sessions?user_id=ketan"
+        ```
+  * **`POST /session`**
+      * Creates a new session for a user.
+      * **`curl` Example:**
+        ```bash
+        curl -X POST -u "admin:password@123" "https://roka-agent-backend-684535434104.us-central1.run.app/session" \
+          -H "Content-Type: application/json" \
+          -d '{"user_id": "ketan"}'
+        ```
+  * **`GET /session/details/:session_id`**
+      * Gets metadata for a single session (like name and creation time).
+      * **`curl` Example:**
+        ```bash
+        curl -u "admin:password@123" "https://roka-agent-backend-684535434104.us-central1.run.app/session/details/YOUR_SESSION_ID"
+        ```
+  * **`GET /session/:session_id`**
+      * Gets the full message history for a single session.
+      * **`curl` Example:**
+        ```bash
+        curl -u "admin:password@123" "https://roka-agent-backend-684535434104.us-central1.run.app/session/YOUR_SESSION_ID"
+        ```
 
-# 2) Upload file (use upload_url from the previous response)
-UPLOAD_URL="PASTE_UPLOAD_URL" 
-curl -i -X PUT "$UPLOAD_URL" -H 'Content-Type: image/png' --data-binary @/path/to/note.png
+### File Upload (Protected)
 
-# 3) Confirm upload
-curl -s -X POST "$BASE/confirm-upload" -H 'Content-Type: application/json' \
-  -d '{"blob_name":"uploads/YOUR_SESSION_ID/UUID-note.png","session_id":"YOUR_SESSION_ID","original_filename":"note.png"}'
-```
+  * **`POST /upload-file`**
+      * Uploads a file associated with a session. Must be sent as `multipart/form-data`.
+      * **`curl` Example:**
+        ```bash
+        # Replace '/path/to/your/file.png' with a real file path and update the session ID
+        curl -X POST -u "admin:password@123" \
+          -F "file=@/path/to/your/file.png" \
+          -F "session_id=YOUR_SESSION_ID" \
+          "https://roka-agent-backend-684535434104.us-central1.run.app/upload-file"
+        ```
 
-Curated Ideas
-```
-# Submit idea (after user confirms the form in UI)
-curl -s -X POST "$BASE/submit-idea" -H 'Content-Type: application/json' \
-  -d '{
-        "session_id":"YOUR_SESSION_ID",
-        "created_by":"ketan",
-        "idea_title":"Replace towels",
-        "explanation":"Better guest satisfaction and hygiene",
-        "category":"housekeeping",
-        "expected_impact":"Improved hygiene",
-        "estimated_cost":"$300",
-        "urgency":"medium"
-      }'
+### Curated Ideas (Protected)
 
-# Ideas for a session
-curl -s "$BASE/ideas/YOUR_SESSION_ID"
+  * **`POST /submit-idea`**
+      * Submits a new idea or updates an existing one (e.g., for approval).
+      * **`curl` Example (New Idea):**
+        ```bash
+        curl -X POST -u "admin:password@123" "https://roka-agent-backend-684535434104.us-central1.run.app/submit-idea" \
+          -H "Content-Type: application/json" \
+          -d '{"session_id": "YOUR_SESSION_ID", "created_by": "ketan", "idea_title": "New Idea", "explanation": "A detailed explanation of the new idea.", "category": "Test", "urgency": "low"}'
+        ```
+      * **`curl` Example (Approve Idea):**
+        ```bash
+        curl -X POST -u "admin:password@123" "https://roka-agent-backend-684535434104.us-central1.run.app/submit-idea" \
+          -H "Content-Type: application/json" \
+          -d '{"idea_id": 1, "approved": true, "reviewer_notes": "This is a great idea. Approved."}'
+        ```
+  * **`GET /ideas`**
+      * Retrieves a list of all curated ideas in the system.
+      * **`curl` Example:**
+        ```bash
+        curl -u "admin:password@123" "https://roka-agent-backend-684535434104.us-central1.run.app/ideas"
+        ```
+  * **`GET /ideas/:session_id`**
+      * Retrieves all ideas associated with a specific session.
+      * **`curl` Example:**
+        ```bash
+        curl -u "admin:password@123" "https://roka-agent-backend-684535434104.us-central1.run.app/ideas/YOUR_SESSION_ID"
+        ```
+  * **`POST /compare-ideas`**
+      * Sends two idea objects to the Gemini API for a detailed comparison.
+      * **`curl` Example:**
+        ```bash
+        curl -X POST -u "admin:password@123" "https://roka-agent-backend-684535434104.us-central1.run.app/compare-ideas" \
+        -H 'Content-Type: application/json' \
+        -d '{
+              "idea1": {"idea_title": "Idea A", "explanation": "Explanation A"},
+              "idea2": {"idea_title": "Idea B", "explanation": "Explanation B"}
+            }'
+        ```
 
-# Approve / reject idea (use id from the previous response)
-curl -s -X POST "$BASE/submit-idea" -H 'Content-Type: application/json' \
-  -d '{"idea_id":101,"approved":true,"reviewer_notes":"Looks good"}'
+### LiveKit Token (Protected)
 
-# All ideas
-curl -s "$BASE/ideas"
-```
-
-## Agent Prompt (Bilingual)
-- Respond in the user’s language (Hindi/English)
-- Ask targeted follow-ups: impact, scope, cost, urgency, dependencies/branch/team, risks, ownership
-- Show a summary form for confirmation; frontend submits to save
-
-## Troubleshooting
-- If you see errors about missing columns, restart backend once so startup migrations run, or use inline ALTERs already added in handlers
-- Verify DB health: `curl -s "$BASE/health/db"`
-
-Terminal 1: Run the Backend
-
-cd roka/backend
-
-source .venv/bin/activate
-
-python server.py
-This server will run on http://127.0.0.1:5001.
-
-Terminal 2: Run the LiveKit Agent
-
-cd roka/backend
-
-source .venv/bin/activate
-
-Run the agent worker:
-
-python agent.py dev
-This will connect your agent to the LiveKit server, ready to join a room.
-
-Terminal 3: Run the Frontend
-
-cd roka/frontend
-
-npm install
-
-npm install @phosphor-icons/react
-
-Start the frontend development server:
-npm run dev
-
-Open your browser and go to the URL provided by Vite (usually http://localhost:5173).
-
-
-
-# Roka-V2
-# Roka-V2
+  * **`GET /getToken`**
+      * Generates a token for a user to join a LiveKit video/audio room.
+      * **`curl` Example:**
+        ```bash
+        curl -u "admin:password@123" "https://roka-agent-backend-684535434104.us-central1.run.app/getToken?session_id=YOUR_SESSION_ID&name=Ketan"
+        ```

@@ -195,16 +195,41 @@ async def entrypoint(ctx: agents.JobContext):
                 except Exception as e:
                     logger.warning("⚠️ FORM PARSE EXCEPTION: %s", e)
 
+            # def is_user_confirmation(msg: str) -> bool:
+            #     m = (msg or "").strip().lower().replace('.', '').replace('।', '')
+            #     confirmation_keywords = [
+            #         'submit', 'confirm', 'finalize', 'finalise', 'go ahead', 'looks good',
+            #         'all good', 'correct', "that's correct", 'yes please', 'theek hai',
+            #         'haan theek hai', 'ok hai', 'kar do', 'as it is', 'सबमिट', 'हाँ', 'ठीक है'
+            #     ]
+            #     for keyword in confirmation_keywords:
+            #         if keyword in m:
+            #             return True
+            #     if "सबमिट कर" in m or "सबमिट कीजिए" in m:
+            #         return True
+            #     return False
+
             def is_user_confirmation(msg: str) -> bool:
                 m = (msg or "").strip().lower().replace('.', '').replace('।', '')
+                
                 confirmation_keywords = [
+                    # English
                     'submit', 'confirm', 'finalize', 'finalise', 'go ahead', 'looks good',
-                    'all good', 'correct', "that's correct", 'yes please', 'theek hai',
-                    'haan theek hai', 'ok hai', 'kar do', 'as it is', 'सबमिट', 'हाँ', 'ठीक है'
+                    'all good', 'correct', "that's correct", 'yes please',
+
+                    # Hindi
+                    'theek hai', 'haan theek hai', 'ok hai', 'kar do', 'as it is', 
+                    'सबमिट', 'हाँ', 'ठीक है',
+
+                    # Marathi
+                    'ho', 'theek aahe', 'karun taka', 'submit kara', 
+                    'हो', 'ठीक आहे', 'सबमिट करा'
                 ]
+
                 for keyword in confirmation_keywords:
                     if keyword in m:
                         return True
+                # Handle multi-word phrases in Hindi/Marathi
                 if "सबमिट कर" in m or "सबमिट कीजिए" in m:
                     return True
                 return False
@@ -232,11 +257,23 @@ async def entrypoint(ctx: agents.JobContext):
                                 },
                             )
                         # This is your desired log for curated ideas
+                        # logger.info("✅ CURATED IDEA SAVED TO DB: Title='%s'", last_idea_form.get('idea_title'))
+
+                        # async def _notify_user():
+                        #     await asyncio.sleep(0.5)
+                        #     await session.generate_reply(instructions="Confirm to the user in their language that their idea has been successfully submitted and thank them.")
+
+                        # asyncio.create_task(_notify_user())
+
+                        # last_idea_form = None
                         logger.info("✅ CURATED IDEA SAVED TO DB: Title='%s'", last_idea_form.get('idea_title'))
 
                         async def _notify_user():
                             await asyncio.sleep(0.5)
-                            await session.generate_reply(instructions="Confirm to the user in their language that their idea has been successfully submitted and thank them.")
+                            # HIGHLIGHTED CHANGE: This new instruction is very specific and points to our prompt.
+                            await session.generate_reply(
+                                instructions="The idea has been saved. Your ONLY task is to deliver the 'Final Submission Confirmation' message in the user's chosen language."
+                            )
 
                         asyncio.create_task(_notify_user())
 
@@ -266,9 +303,15 @@ async def entrypoint(ctx: agents.JobContext):
             )
         asyncio.create_task(_greet())
 
-    await session.generate_reply(
-        instructions="""Your ONLY task is to say the following phrase verbatim, with no extra words or translation: 'नमस्ते! Welcome to the ROKA Voice Idea Agent. Would you like to continue in English or Hindi?' If you have the previous context of the idea, continue the conversation from there giving the user a detailed context of the idea from where you are continuing the conversation.""",
-    )
+    if not history:
+        await session.generate_reply(
+            instructions="""Your ONLY task is to say the following phrase verbatim, with no extra words or translation: "नमस्ते! Welcome to the ROKA Voice Idea Agent. To chat in English, please say 'English'. हिंदी में बात करने के लिए, 'हिंदी' कहिए। आणि मराठीत बोलण्यासाठी, 'मराठी' म्हणा." """
+        )
+    else:
+        await session.generate_reply(
+            instructions="You are reconnected to a previous session. Welcome the user back and ask them how they would like to continue with their idea."
+        )
+
 
     @session.on("close")
     def on_close(_):

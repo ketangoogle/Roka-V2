@@ -11,6 +11,7 @@ from sqlalchemy import text
 from db_schema import metadata
 from google.cloud import storage
 import google.generativeai as genai
+from functools import wraps # <-- ADDED IMPORT
 
 load_dotenv()
 app = Quart(__name__)
@@ -23,6 +24,30 @@ BUCKET_NAME = os.getenv("BUCKET_NAME")
 # --- Global Database Engine (Initialized at startup) ---
 engine = None
 connector = None
+
+HARDCODED_USERNAME = "admin"
+HARDCODED_PASSWORD = "password@123"
+
+def require_auth(func):
+    """A decorator to protect routes with hardcoded basic auth."""
+    @wraps(func)
+    async def wrapper(*args, **kwargs):
+        auth = request.authorization
+        # Check if auth details are provided and match the hardcoded credentials
+        if not auth or \
+           auth.username != HARDCODED_USERNAME or \
+           auth.password != HARDCODED_PASSWORD:
+            # If they don't match, return a 401 Unauthorized error
+            return (
+                jsonify({"error": "Unauthorized access"}),
+                401,
+                {'WWW-Authenticate': 'Basic realm="Login Required"'}
+            )
+        # If credentials are valid, proceed to the original route function
+        return await func(*args, **kwargs)
+    return wrapper
+# --- END NEW SECTION ---
+
 
 @app.before_serving
 async def startup():
@@ -80,10 +105,10 @@ async def startup():
             except Exception:
                 pass
             # Backfill approved from legacy column if present
-            try:
-                await conn.execute(text("UPDATE curated_ideas SET approved = \"Approved\" WHERE \"Approved\" IS NOT NULL"))
-            except Exception:
-                pass
+            # try:
+            #     await conn.execute(text("UPDATE curated_ideas SET approved = \"Approved\" WHERE \"Approved\" IS NOT NULL"))
+            # except Exception:
+            #     pass
         async with engine.connect() as conn:
             await conn.execute(text("SELECT 1"))
             # Seed hardcoded users (for demo only)
@@ -129,16 +154,45 @@ async def shutdown():
     global engine, connector
     print("🔌 Shutting down...")
     if engine:
-        print("   - Disposing database engine.")
+        print("    - Disposing database engine.")
         await engine.dispose()
     if connector:
-        print("   - Closing database connector.")
+        print("    - Closing database connector.")
         await connector.close_async()
     print("❌ Server shutdown complete")
 
 # --- API Routes ---
 
+@app.route("/login", methods=["POST"])
+async def login():
+    """
+    Validates credentials against the hardcoded admin username and password.
+    This endpoint is public and does not use the @require_auth decorator.
+    """
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 415
+
+    data = await request.get_json()
+    username = data.get("username")
+    password = data.get("password")
+
+    if not username or not password:
+        return jsonify({"error": "Username and password are required"}), 400
+
+    # Check against the hardcoded admin credentials
+    if username == HARDCODED_USERNAME and password == HARDCODED_PASSWORD:
+        return jsonify({
+            "message": "Login successful",
+            "user": {
+                "id": "admin",
+                "username": "admin"
+            }
+        }), 200
+    else:
+        return jsonify({"error": "Invalid username or password"}), 401
+
 @app.route("/sessions", methods=["GET"])
+@require_auth  # <-- PROTECTED
 async def list_sessions():
     """List sessions for a specific user (hardcoded users). Falls back if column not yet migrated."""
     user_id = request.args.get("user_id")
@@ -170,6 +224,7 @@ async def list_sessions():
         return jsonify([dict(row) for row in sessions])
 
 @app.route("/session", methods=["POST"])
+@require_auth  # <-- PROTECTED
 async def create_session():
     """Create a new session scoped to a user (user_id required)."""
     data = await request.json
@@ -192,6 +247,7 @@ async def create_session():
 
 # --- NEW GET REQUEST ---
 @app.route("/session/details/<session_id>", methods=["GET"])
+@require_auth  # <-- PROTECTED
 async def get_session_details(session_id):
     """Get details for a single session."""
     async with engine.connect() as conn:
@@ -205,18 +261,8 @@ async def get_session_details(session_id):
         else:
             return jsonify({"error": "Session not found"}), 404
 
-# @app.route("/session/<session_id>", methods=["GET"])
-# async def get_session_history(session_id):
-#     """Get the message history for a specific session."""
-#     async with engine.connect() as conn:
-#         result = await conn.execute(
-#             text("SELECT role, text_content, file_url FROM messages WHERE session_id = :id ORDER BY timestamp ASC"),
-#             {"id": session_id}
-#         )
-#         messages = result.mappings().all()
-#         return jsonify([dict(row) for row in messages])
-
 @app.route("/session/<session_id>", methods=["GET"])
+@require_auth  # <-- PROTECTED
 async def get_session_history(session_id):
     """Get message history, converting GCS URIs to public URLs for previews."""
     async with engine.connect() as conn:
@@ -281,67 +327,62 @@ async def health_check_db():
 
 # --- Google Cloud Storage Routes ---
 
-@app.route("/generate-upload-url", methods=["POST"])
-async def generate_upload_url():
-    """Generate a signed URL for uploading a file to GCS."""
-    data = await request.json
-    file_name = data.get("file_name")
-    session_id = data.get("session_id")
-    content_type = data.get("content_type", "application/octet-stream")
-    
-    if not file_name:
-        return jsonify({"error": "file_name is required"}), 400
-    
+@app.route("/upload-file", methods=["POST"])
+@require_auth
+async def upload_file():
+    """
+    Handles file uploads by saving them locally first, then uploading to GCS.
+    Expects a multipart/form-data request with 'file' and 'session_id'.
+    """
     try:
-        blob_name = f"uploads/{session_id}/{uuid.uuid4()}-{file_name}"
+        form = await request.form
+        session_id = form.get("session_id")
+        if not session_id:
+            return jsonify({"error": "session_id is required"}), 400
+
+        files = await request.files
+        uploaded_file = files.get("file")
+        if not uploaded_file or not uploaded_file.filename:
+            return jsonify({"error": "File part is missing or empty"}), 400
+
+        # Step 1: Ensure the local directory exists and save the file there
+        session_uploads_path = os.path.join(os.getcwd(), "uploads", session_id)
+        os.makedirs(session_uploads_path, exist_ok=True)
+        
+        local_file_path = os.path.join(session_uploads_path, uploaded_file.filename)
+        await uploaded_file.save(local_file_path)
+        print(f"✅ File saved locally to: {local_file_path}")
+
+        # Step 2: Upload the file from the local path to Google Cloud Storage
+        blob_name = f"uploads/{session_id}/{uuid.uuid4()}-{uploaded_file.filename}"
         bucket = storage_client.bucket(BUCKET_NAME)
         blob = bucket.blob(blob_name)
         
-        signer_email = os.getenv("SIGNER_SERVICE_ACCOUNT_EMAIL")
-        if not signer_email:
-            raise ValueError("SIGNER_SERVICE_ACCOUNT_EMAIL environment variable not set.")
-
-        upload_url = blob.generate_signed_url(
-            version="v4", expiration=datetime.timedelta(minutes=15),
-            method="PUT", content_type=content_type, service_account_email=signer_email
-        )
+        blob.upload_from_filename(local_file_path)
+        print(f"☁️ File uploaded to GCS bucket '{BUCKET_NAME}' as '{blob_name}'")
         
-        download_url = blob.generate_signed_url(
-            version="v4", expiration=datetime.timedelta(days=1),
-            method="GET", service_account_email=signer_email
-        )
+        # Step 3: Record the upload in the database
+        file_url = f"gs://{BUCKET_NAME}/{blob_name}"
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("""
+                    INSERT INTO messages (session_id, role, text_content, file_url) 
+                    VALUES (:session_id, 'user', :filename, :file_url)
+                """),
+                {"session_id": session_id, "filename": f"📎 {uploaded_file.filename}", "file_url": file_url}
+            )
         
         return jsonify({
-            "upload_url": upload_url, "download_url": download_url,
-            "blob_name": blob_name, "bucket": BUCKET_NAME
-        })
-    except Exception as e:
-        return jsonify({"error": "Failed to generate signed URL", "message": str(e)}), 500
+            "message": "File uploaded successfully",
+            "file_url": file_url
+        }), 201
 
-@app.route("/confirm-upload", methods=["POST"])
-async def confirm_upload():
-    """Confirm file upload and store its metadata in the database."""
-    data = await request.json
-    blob_name = data.get("blob_name")
-    session_id = data.get("session_id")
-    original_filename = data.get("original_filename")
-    
-    if not all([blob_name, session_id, original_filename]):
-        return jsonify({"error": "blob_name, session_id, and original_filename are required"}), 400
-    
-    file_url = f"gs://{BUCKET_NAME}/{blob_name}"
-    async with engine.begin() as conn:
-        await conn.execute(
-            text("""
-                INSERT INTO messages (session_id, role, text_content, file_url) 
-                VALUES (:session_id, 'user', :filename, :file_url)
-            """),
-            {"session_id": session_id, "filename": f"📎 {original_filename}", "file_url": file_url}
-        )
-    
-    return jsonify({"message": "File upload confirmed", "file_url": file_url})
+    except Exception as e:
+        app.logger.error(f"❌ File upload failed: {e}")
+        return jsonify({"error": "An internal server error occurred during file upload"}), 500
 
 @app.route("/submit-idea", methods=["POST"])
+@require_auth  # <-- PROTECTED
 async def submit_idea():
     """Submit a curated idea to the database or update approval status."""
     data = await request.json
@@ -411,7 +452,7 @@ async def submit_idea():
             result = await conn.execute(
                 text("""
                     INSERT INTO curated_ideas (session_id, created_by, idea_title, explanation, category, 
-                                             expected_impact, estimated_cost, urgency, approved)
+                                                expected_impact, estimated_cost, urgency, approved)
                     VALUES (:session_id, :created_by, :idea_title, :explanation, :category, 
                             :expected_impact, :estimated_cost, :urgency, :approved)
                     RETURNING id
@@ -454,6 +495,7 @@ async def submit_idea():
         return jsonify({"error": f"Failed to process idea: {str(e)}"}), 500
 
 @app.route("/ideas/<session_id>", methods=["GET"])
+@require_auth  # <-- PROTECTED
 async def get_session_ideas(session_id):
     """Get curated ideas for a specific session."""
     if not engine:
@@ -474,28 +516,8 @@ async def get_session_ideas(session_id):
         ideas = result.mappings().all()
         return jsonify([dict(row) for row in ideas])
 
-# @app.route("/ideas", methods=["GET"])
-# async def get_all_ideas():
-#     """Get all curated ideas across all sessions."""
-#     if not engine:
-#         return jsonify([])
-    
-#     async with engine.connect() as conn:
-#         result = await conn.execute(
-#             text("""
-#                 SELECT ci.id, ci.idea_title, ci.explanation, ci.category, ci.expected_impact, 
-#                        ci.estimated_cost, ci.urgency, ci.status, ci.submitted_at,
-#                        ci.approved, ci.reviewer_notes, ci.reviewed_at, ci.created_by,
-#                        s.name as session_name
-#                 FROM curated_ideas ci
-#                 LEFT JOIN sessions s ON ci.session_id = s.id
-#                 ORDER BY ci.submitted_at DESC
-#             """)
-#         )
-#         ideas = result.mappings().all()
-#         return jsonify([dict(row) for row in ideas])
-
 @app.route("/ideas", methods=["GET"])
+@require_auth  # <-- PROTECTED
 async def get_all_ideas():
     """Get all curated ideas and efficiently attach any associated image URLs."""
     if not engine:
@@ -573,6 +595,7 @@ async def get_all_ideas():
         return jsonify({"error": "An internal server error occurred"}), 500
     
 @app.route("/compare-ideas", methods=["POST"])
+@require_auth  # <-- PROTECTED
 async def compare_ideas():
     """Compare two ideas using Gemini API."""
     try:
@@ -591,7 +614,7 @@ async def compare_ideas():
             if not api_key:
                 return jsonify({"error": "Gemini API key not configured"}), 500
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-2.5-flash')
+            model = genai.GenerativeModel('gemini-1.5-flash')
 
             # Create comparison prompt
             prompt = f"""
@@ -644,6 +667,7 @@ async def compare_ideas():
 # --- LiveKit Token Route ---
 
 @app.route("/getToken", methods=["GET"])
+@require_auth  # <-- PROTECTED
 async def get_token():
     """Get a LiveKit token."""
     session_id = request.args.get("session_id")
@@ -659,4 +683,5 @@ async def get_token():
     return jsonify({"token": token.to_jwt()})
 
 if __name__ == "__main__":
-    app.run(debug=True, port=5001)
+    port = int(os.environ.get("PORT", 5001))
+    app.run(debug=True, host="0.0.0.0", port=port)
