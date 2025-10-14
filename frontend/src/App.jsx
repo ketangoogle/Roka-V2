@@ -4,13 +4,18 @@ import { VoiceAssistant } from "./VoiceAssistant";
 import { IdeasList } from "./IdeasList";
 import RoleSelection from "./RoleSelection";
 import Login from "./Login";
+import AdminLogin from "./AdminLogin";
 import SubmitterMenu from "./SubmitterMenu";
 import "./App.css";
 import { useState, useCallback } from "react";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+const BACKEND_URL = 'https://roka-agent-backend-684535434104.us-central1.run.app';
+const VITE_LIVEKIT_URL  = 'wss://voice-agent-km9i6pp0.livekit.cloud'
+const AUTH_HEADER = { 'Authorization': 'Basic YWRtaW46cGFzc3dvcmRAMTIz' };
+const AUTH_JSON_HEADER = { ...AUTH_HEADER, 'Content-Type': 'application/json' };
 
 function App() {
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [appState, setAppState] = useState('ROLE_SELECTION');
   const [userRole, setUserRole] = useState(null);
   const [loggedInUser, setLoggedInUser] = useState(null);
@@ -41,14 +46,15 @@ function App() {
     try {
       const sessionResponse = await fetch(`${BACKEND_URL}/session`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: AUTH_JSON_HEADER,
         body: JSON.stringify({ user_id: loggedInUser }),
       });
       if (!sessionResponse.ok) throw new Error("Failed to create a session.");
       const { id: newSessionId } = await sessionResponse.json();
       
       const tokenResponse = await fetch(
-        `${BACKEND_URL}/getToken?session_id=${newSessionId}&name=${encodeURIComponent(loggedInUser)}`
+        `${BACKEND_URL}/getToken?session_id=${newSessionId}&name=${encodeURIComponent(loggedInUser)}`,
+        { headers: AUTH_HEADER }
       );
       if (!tokenResponse.ok) throw new Error("Failed to fetch token.");
       const { token: newToken } = await tokenResponse.json();
@@ -68,7 +74,8 @@ function App() {
     setIsConnecting(true);
     try {
       const tokenResponse = await fetch(
-        `${BACKEND_URL}/getToken?session_id=${existingSessionId}&name=${encodeURIComponent(loggedInUser)}`
+        `${BACKEND_URL}/getToken?session_id=${existingSessionId}&name=${encodeURIComponent(loggedInUser)}`,
+        { headers: AUTH_HEADER }
       );
       if (!tokenResponse.ok) throw new Error("Failed to fetch token.");
       const { token: existingToken } = await tokenResponse.json();
@@ -96,13 +103,16 @@ function App() {
         Welcome, <strong>{user}</strong>. Have a productive day!
       </div>
       <div className="navbar-brand">
-        <span>ROKA Agent | {role === 'submitter' ? 'Idea Submitter' : 'Idea Reviewer'}</span>
-        <img src="/taj-logo.png" alt="TAJ Logo" />
+        <span>{role === 'submitter' ? 'Idea Submitter' : 'Idea Reviewer'}</span>
       </div>
     </header>
   );
 
   const renderContent = () => {
+    if (!isAdminAuthenticated) {
+      return <AdminLogin onLoginSuccess={() => setIsAdminAuthenticated(true)} />;
+    }
+
     const fullScreenStates = ['ROLE_SELECTION', 'LOGIN', 'VOICE_AGENT'];
     if (fullScreenStates.includes(appState)) {
       switch (appState) {
@@ -110,7 +120,7 @@ function App() {
           return <Login userRole={userRole} onLoginSuccess={handleLoginSuccess} onBack={() => setAppState('ROLE_SELECTION')} />;
         case 'VOICE_AGENT':
           return token ? (
-            <LiveKitRoom serverUrl={import.meta.env.VITE_LIVEKIT_URL} token={token} connect={true} video={false} audio={true} onDisconnected={handleDisconnect}>
+            <LiveKitRoom serverUrl={VITE_LIVEKIT_URL} token={token} connect={true} video={false} audio={true} onDisconnected={handleDisconnect}>
               <VoiceAssistant sessionId={sessionId} userId={loggedInUser} />
             </LiveKitRoom>
           ) : <div className="pre-connection-view"><p>{isConnecting ? "Connecting..." : "Preparing session..."}</p></div>;
@@ -129,8 +139,6 @@ function App() {
               onStartSubmit={startSessionAndConnect} 
               onJoinSession={handleJoinSession}
               onExplore={() => setAppState('EXPLORE_IDEAS')}
-              // --- THIS IS THE ONLY CHANGE ---
-              // The missing onLogout prop has been added.
               onLogout={handleLogout} 
             />}
           {appState === 'EXPLORE_IDEAS' && <IdeasList isReviewerMode={false} userId={loggedInUser} onBack={() => setAppState('SUBMITTER_MENU')} />}

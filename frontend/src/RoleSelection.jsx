@@ -1,12 +1,12 @@
 import React from 'react';
 
-// This component shows the initial choice for the user.
 function RoleSelection({ onSelectRole }) {
   return (
     <div className="pre-connection-view">
-      <img src="/taj-logo.png" alt="TAJ Logo" className="app-logo" />
+      {/* --- THE CHANGE: Logo removed --- */}
       <header className="app-header">
-        <h1>Welcome to ROKA Voice Idea Agent</h1>
+        {/* --- THE CHANGE: Rebranded text --- */}
+        <h1>Welcome to the Voice Idea Agent</h1>
         <p>Select Your Role</p>
       </header>
       <div className="view-switcher">

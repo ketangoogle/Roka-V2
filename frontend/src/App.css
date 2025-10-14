@@ -89,10 +89,6 @@ body, html {
   padding: 1.5rem;
   text-align: center;
 }
-.app-logo {
-  max-width: 100px;
-  margin-bottom: 1.5rem;
-}
 .app-header h1 {
   font-size: clamp(1.8rem, 4vw, 2.2rem);
   font-weight: 500;
@@ -423,6 +419,19 @@ body, html {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+/* --- NEW STYLE: This is for displaying the filename as a fallback --- */
+.attachment-filename-display {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  text-align: center;
+  padding: 0.5rem;
+  font-size: 0.9rem;
+  word-break: break-all;
 }
 .submit-images-button {
   width: 100%;
@@ -774,17 +783,23 @@ body, html {
   margin: 0 0 1.25rem 0;
 }
 .idea-details-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem; /* Space between each row */
   font-size: 0.9rem;
 }
-.idea-details-grid div { color: var(--text-secondary); }
-.idea-details-grid div strong {
+.idea-details-grid .detail-item {
+  display: flex;
+  gap: 1.5rem; /* Space between label and value */
+}
+.idea-details-grid .detail-item strong {
   color: var(--text-primary);
-  display: block;
   font-weight: 500;
-  margin-bottom: 2px;
+  flex-basis: 70px; /* Give all labels a consistent width */
+  flex-shrink: 0;
+}
+.idea-details-grid .detail-item span {
+  color: var(--text-secondary);
 }
 .idea-card-footer {
   border-top: 1px solid var(--bg-color);
@@ -794,6 +809,20 @@ body, html {
   justify-content: space-between;
   font-size: 0.85rem;
   color: var(--text-secondary);
+}
+
+/* New styles for the title and bulb icon */
+.idea-title-container {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  /* Allow the container to shrink if meta badges are long */
+  min-width: 0; 
+}
+
+.idea-icon {
+  font-size: 1.2rem;
+  flex-shrink: 0;
 }
 
 /* =================================== */

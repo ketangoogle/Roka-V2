@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL;
+const BACKEND_URL = 'https://roka-agent-backend-684535434104.us-central1.run.app'; // <-- CORRECTED
+const AUTH_HEADER = { 'Authorization': 'Basic YWRtaW46cGFzc3dvcmRAMTIz' };
 
-// SVG Icons for the action cards
 const SubmitIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="24" height="24">
     <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z" />
@@ -23,10 +23,19 @@ function SubmitterMenu({ loggedInUser, onStartSubmit, onJoinSession, onExplore, 
       if (!loggedInUser) return;
       try {
         setLoading(true);
-        const response = await fetch(`${BACKEND_URL}/sessions?user_id=${encodeURIComponent(loggedInUser)}`);
-        if (response.ok) setSessions(await response.json());
+        const response = await fetch(`${BACKEND_URL}/sessions?user_id=${encodeURIComponent(loggedInUser)}`, {
+          headers: AUTH_HEADER,
+        });
+        
+        if (response.ok) {
+          setSessions(await response.json());
+        } else {
+          console.error("Failed to fetch sessions. Server responded with status:", response.status);
+          const errorText = await response.text();
+          console.error("Server error response:", errorText);
+        }
       } catch (error) {
-        console.error("Failed to fetch sessions", error);
+        console.error("A network error occurred while fetching sessions:", error);
       } finally {
         setLoading(false);
       }
@@ -37,7 +46,6 @@ function SubmitterMenu({ loggedInUser, onStartSubmit, onJoinSession, onExplore, 
   return (
     <div className="portal-container">
       <div className="submitter-dashboard-layout">
-        {/* Left Column: Main Actions */}
         <div className="main-actions">
           <div className="action-card">
             <div className="action-card-header">
@@ -57,7 +65,6 @@ function SubmitterMenu({ loggedInUser, onStartSubmit, onJoinSession, onExplore, 
           </div>
         </div>
 
-        {/* Right Column: Recent Sessions */}
         <div className="recent-sessions-panel">
           <h3>Chat History</h3>
           <div className="session-list">
@@ -79,7 +86,6 @@ function SubmitterMenu({ loggedInUser, onStartSubmit, onJoinSession, onExplore, 
         </div>
       </div>
       
-      {/* Logout button is now placed logically at the bottom of the container */}
       <button className="back-button logout-button" onClick={onLogout}>Logout</button>
     </div>
   );

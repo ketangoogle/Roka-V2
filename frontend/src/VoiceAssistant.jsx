@@ -7,17 +7,15 @@ import { useEffect, useState, useRef } from "react";
 import { FileText, PaperPlaneRight, Paperclip, Plus } from "@phosphor-icons/react";
 import Notification from "./Notification";
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "http://127.0.0.1:8000";
+const BACKEND_URL = 'https://roka-agent-backend-684535434104.us-central1.run.app';
+const AUTH_HEADER = { 'Authorization': 'Basic YWRtaW46cGFzc3dvcmRAMTIz' };
 
 export function VoiceAssistant({ sessionId, userId }) {
-  // --- STATE & HOOKS ---
   const { state, agentTranscriptions } = useVoiceAssistant();
   const { send, chatMessages } = useChat();
   const [isLoadingHistory, setIsLoadingHistory] = useState(true);
   const localParticipant = useLocalParticipant();
 
-  // --- THE CRITICAL FIX: Your original hook, now protected by a guard clause below ---
-  // This hook will only be initialized when `localParticipant.microphoneTrack` is guaranteed to exist.
   const { segments: userTranscriptions } = useTrackTranscription({
     publication: localParticipant.microphoneTrack,
     source: Track.Source.Microphone,
@@ -35,13 +33,11 @@ export function VoiceAssistant({ sessionId, userId }) {
   const chatListRef = useRef(null);
   const fileInputRef = useRef(null);
 
-  // --- DATA FETCHING & SYNCHRONIZATION ---
-
   const fetchHistory = async () => {
     if (!sessionId) return;
     try {
       setIsLoadingHistory(true);
-      const response = await fetch(`${BACKEND_URL}/session/${sessionId}`);
+      const response = await fetch(`${BACKEND_URL}/session/${sessionId}`, { headers: AUTH_HEADER });
       if (!response.ok) throw new Error("Failed to fetch session history.");
       const history = await response.json();
       
@@ -57,8 +53,9 @@ export function VoiceAssistant({ sessionId, userId }) {
         .map((msg, index) => ({
           id: `db-img-${index}-${msg.timestamp}`,
           url: msg.file_url,
-          name: msg.text_content.replace('📎 ', '')
+          name: msg.text_content.replace('ðŸ“Ž ', '')
         }));
+      
       setSubmittedImages(historyImages);
 
     } catch (error) {
@@ -70,7 +67,6 @@ export function VoiceAssistant({ sessionId, userId }) {
 
   useEffect(() => { fetchHistory(); }, [sessionId]);
 
-  // Restored your original, simple, and correct message merging logic
   useEffect(() => {
     const newItems = [
       ...(agentTranscriptions?.map((t) => ({ ...t, type: "agent" })) ?? []),
@@ -93,8 +89,6 @@ export function VoiceAssistant({ sessionId, userId }) {
     if (chatListRef.current) chatListRef.current.scrollTop = chatListRef.current.scrollHeight;
   }, [messages]);
 
-
-  // --- EVENT HANDLERS ---
   const handleSendMessage = async (e) => {
     e.preventDefault();
     if (inputValue.trim()) {
@@ -105,7 +99,7 @@ export function VoiceAssistant({ sessionId, userId }) {
   
   const handleUploadClick = () => fileInputRef.current?.click();
   
-  const handleFileChange = async (event) => {
+  const handleFileChange = (event) => {
     const file = event.target.files[0];
     if (!file) return;
     if ((stagedImages.length + submittedImages.length) >= 2) {
@@ -113,65 +107,76 @@ export function VoiceAssistant({ sessionId, userId }) {
       if (event.target) event.target.value = null;
       return;
     }
+    
+    const newImage = {
+      id: `staged-${file.name}-${Date.now()}`,
+      file: file,
+      previewUrl: URL.createObjectURL(file),
+      name: file.name,
+    };
+    setStagedImages(prev => [...prev, newImage]);
     setIsPanelOpen(true);
-    try {
-      const urlResponse = await fetch(`${BACKEND_URL}/generate-upload-url`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_name: file.name, content_type: file.type, session_id: sessionId }),
-      });
-      const urlData = await urlResponse.json();
-      if (!urlResponse.ok) throw new Error(urlData.message || 'Failed to get upload URL.');
-      
-      await fetch(urlData.upload_url, {
-        method: 'PUT', headers: { 'Content-Type': file.type }, body: file,
-      });
-      
-      const newImage = {
-        id: `staged-${file.name}-${Date.now()}`,
-        previewUrl: URL.createObjectURL(file),
-        blobName: urlData.blob_name,
-        originalFilename: file.name,
-      };
-      setStagedImages(prev => [...prev, newImage]);
-      
-    } catch (error) {
-      console.error('File staging failed:', error);
-      setNotification(`Error preparing file: ${error.message}`);
-    } finally {
-      if (event.target) event.target.value = null;
-    }
+    if (event.target) event.target.value = null;
   };
 
+  // --- MODIFIED SECTION START ---
   const handleSubmitImages = async () => {
     if (stagedImages.length === 0) return;
     setIsSubmitting(true);
+    setNotification('Submitting images...');
+
     try {
-      await Promise.all(stagedImages.map(image => 
-        fetch(`${BACKEND_URL}/confirm-upload`, {
+      // Change the fetch call to parse the JSON response from the backend
+      const uploadPromises = stagedImages.map(image => {
+        const formData = new FormData();
+        formData.append('file', image.file);
+        formData.append('session_id', sessionId);
+        return fetch(`${BACKEND_URL}/upload-file`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            blob_name: image.blobName,
-            session_id: sessionId,
-            original_filename: image.originalFilename,
-          }),
+          headers: AUTH_HEADER,
+          body: formData,
         }).then(res => {
-          if (!res.ok) throw new Error('One or more images failed to submit.');
-        })
-      ));
+          if (!res.ok) {
+            // Ensure the promise rejects on a bad response
+            return res.json().then(err => Promise.reject(err));
+          }
+          return res.json();
+        });
+      });
+
+      // This will now be an array of successful upload responses
+      const results = await Promise.all(uploadPromises);
+
+      // Create new messages and images locally from the backend responses
+      const newMessages = results.map(result => ({
+        id: `msg-${Date.now()}-${result.newMessage.timestamp}`,
+        type: 'user',
+        text: result.newMessage.text_content,
+        file_url: result.newMessage.file_url,
+        firstReceivedTime: new Date(result.newMessage.timestamp).getTime(),
+      }));
+
+      const newSubmittedImages = results.map(result => ({
+        id: `db-img-${Date.now()}-${result.newMessage.timestamp}`,
+        url: result.newMessage.file_url,
+        name: result.newMessage.text_content.replace('ðŸ“Ž ', ''),
+      }));
+
+      // Update state directly instead of re-fetching all history
+      setMessages(prev => [...prev, ...newMessages]);
+      setSubmittedImages(prev => [...prev, ...newSubmittedImages]);
 
       setNotification('Images submitted successfully!');
       setStagedImages([]);
-      await fetchHistory();
 
     } catch (error) {
       console.error('Failed to submit images:', error);
       setNotification(`Error submitting images: ${error.message}`);
-      await fetchHistory();
     } finally {
       setIsSubmitting(false);
     }
   };
+  // --- MODIFIED SECTION END ---
 
   const getAgentStatusText = () => {
     switch (state) {
@@ -182,19 +187,14 @@ export function VoiceAssistant({ sessionId, userId }) {
     }
   };
 
-  // --- THE CRITICAL GUARD CLAUSE ---
-  // This prevents the component from rendering (and crashing) until the microphone is ready.
   if (!localParticipant || !localParticipant.microphoneTrack) {
     return (
       <div className="chat-container">
-        <div className="loading-state" style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          Connecting to voice agent...
-        </div>
+        <div className="loading-state">Connecting to voice agent...</div>
       </div>
     );
   }
 
-  // --- JSX RENDER ---
   const allImagesInPanel = [...submittedImages, ...stagedImages];
 
   return (
@@ -203,8 +203,7 @@ export function VoiceAssistant({ sessionId, userId }) {
       <header className="app-navbar">
         <div className="navbar-welcome">Welcome, <strong>{userId}</strong>. Capturing your new idea...</div>
         <div className="navbar-brand">
-          <span>ROKA Agent | Idea Submitter</span>
-          <img src="/taj-logo.png" alt="TAJ Logo" />
+          <span>Voice Idea Agent | Idea Submitter</span>
         </div>
       </header>
 
@@ -220,7 +219,7 @@ export function VoiceAssistant({ sessionId, userId }) {
                   <img src={msg.type === 'agent' ? '/agent-logo.png' : '/user-logo.png'} alt={`${msg.type} avatar`} className="chat-avatar" />
                   {msg.file_url ? (
                     <a href={msg.file_url} target="_blank" rel="noopener noreferrer" className={`chat-bubble ${msg.type}-bubble file-bubble`}>
-                      <FileText size={24} /> <span>{msg.text.replace('📎 ', '')}</span>
+                      <FileText size={24} /> <span>{msg.text.replace('ðŸ“Ž ', '')}</span>
                     </a>
                   ) : (
                     <div className={`chat-bubble ${msg.type}-bubble`}>{msg.text}</div>
@@ -236,6 +235,8 @@ export function VoiceAssistant({ sessionId, userId }) {
           <div className="image-placeholder-container">
             {[...Array(2)].map((_, index) => {
               const image = allImagesInPanel[index];
+              const isHttpUrl = image && image.url && image.url.startsWith('http');
+
               return (
                 <div
                   key={image ? image.id : `placeholder-${index}`}
@@ -245,7 +246,24 @@ export function VoiceAssistant({ sessionId, userId }) {
                   }}
                 >
                   {image ? (
-                    <img src={image.url || image.previewUrl} alt={image.name || image.originalFilename} className="attachment-thumbnail" />
+                    image.previewUrl ? (
+                      <img
+                        src={image.previewUrl}
+                        alt={image.name}
+                        className="attachment-thumbnail"
+                      />
+                    ) : isHttpUrl ? (
+                      <img
+                        src={image.url}
+                        alt={image.name}
+                        className="attachment-thumbnail"
+                      />
+                    ) : (
+                      <div className="attachment-filename-display">
+                        <FileText size={24} />
+                        <span>{image.name || 'File attached'}</span>
+                      </div>
+                    )
                   ) : (
                     <div className="add-image-prompt">
                       <Plus size={32} />
