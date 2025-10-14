@@ -10,7 +10,8 @@ import "./App.css";
 import { useState, useCallback } from "react";
 
 const BACKEND_URL = 'https://roka-agent-backend-684535434104.us-central1.run.app';
-const VITE_LIVEKIT_URL  = 'wss://voice-agent-km9i6pp0.livekit.cloud'
+const VITE_LIVEKIT_URL='wss://voice-agent-km9i6pp0.livekit.cloud';
+
 const AUTH_HEADER = { 'Authorization': 'Basic YWRtaW46cGFzc3dvcmRAMTIz' };
 const AUTH_JSON_HEADER = { ...AUTH_HEADER, 'Content-Type': 'application/json' };
 

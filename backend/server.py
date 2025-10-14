@@ -5,7 +5,7 @@ from quart import Quart, request, jsonify
 from dotenv import load_dotenv
 from quart_cors import cors
 from livekit import api
-from google.cloud.sql.connector import Connector, IPTypes
+from google.cloud.sql.connector import Connector, IPTypes, create_async_connector
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy import text
 from db_schema import metadata
@@ -63,7 +63,7 @@ async def startup():
         db_pass = os.environ["DB_PASS"]
         db_name = os.environ["DB_NAME"]
 
-        connector = Connector()
+        connector = await create_async_connector()
 
         async def getconn():
             conn = await connector.connect_async(
@@ -235,7 +235,7 @@ async def get_session_details(session_id):
 @app.route("/session/<session_id>", methods=["GET"])
 @require_auth
 async def get_session_history(session_id):
-    """Get message history, converting GCS URIs to public, signed URLs."""
+    """Get message history, converting GCS URIs to public URLs for previews."""
     async with engine.connect() as conn:
         result = await conn.execute(
             text("SELECT role, text_content, file_url, timestamp FROM messages WHERE session_id = :id ORDER BY timestamp ASC"),
@@ -244,38 +244,100 @@ async def get_session_history(session_id):
         messages_from_db = result.mappings().all()
 
         processed_messages = []
-        
+        signer_email = os.getenv("SIGNER_SERVICE_ACCOUNT_EMAIL")
+        if not signer_email:
+            print("⚠️ SIGNER_SERVICE_ACCOUNT_EMAIL is not set. Image previews will fail.")
+            return jsonify([dict(row) for row in messages_from_db])
+
         for row in messages_from_db:
             row_dict = dict(row)
             file_url = row_dict.get("file_url")
             
-            # If the URL is a Google Cloud Storage path, generate a temporary public URL
             if file_url and file_url.startswith("gs://"):
                 try:
-                    # Parse the gs:// URI to get bucket and blob names
                     bucket_name = file_url.split('/')[2]
                     blob_name = '/'.join(file_url.split('/')[3:])
                     
                     bucket = storage_client.bucket(bucket_name)
                     blob = bucket.blob(blob_name)
                     
-                    # Generate a signed URL that is valid for 1 hour
                     signed_url = blob.generate_signed_url(
                         version="v4",
-                        expiration=datetime.timedelta(hours=1),
+                        expiration=datetime.timedelta(days=1),
                         method="GET",
+                        service_account_email=signer_email
                     )
-                    # Replace the gs:// path with the new public URL
                     row_dict["file_url"] = signed_url
                 except Exception as e:
-                    app.logger.error(f"Failed to generate signed URL for {file_url}: {e}")
-                    # If signing fails, set the URL to None so the frontend can handle it
-                    row_dict["file_url"] = None
+                    print(f"⚠️ Failed to generate signed URL for {file_url}: {e}")
             
             processed_messages.append(row_dict)
 
         return jsonify(processed_messages)
-# --- END OF THE CRITICAL BACKEND FIX ---
+
+
+@app.route("/generate-upload-url", methods=["POST"])
+@require_auth
+async def generate_upload_url():
+    """Generate a signed URL for uploading a file to GCS."""
+    data = await request.json
+    file_name = data.get("file_name")
+    session_id = data.get("session_id")
+    content_type = data.get("content_type", "application/octet-stream")
+    
+    if not file_name:
+        return jsonify({"error": "file_name is required"}), 400
+    
+    try:
+        blob_name = f"uploads/{session_id}/{uuid.uuid4()}-{file_name}"
+        bucket = storage_client.bucket(BUCKET_NAME)
+        blob = bucket.blob(blob_name)
+        
+        signer_email = os.getenv("SIGNER_SERVICE_ACCOUNT_EMAIL")
+        if not signer_email:
+            raise ValueError("SIGNER_SERVICE_ACCOUNT_EMAIL environment variable not set.")
+
+        upload_url = blob.generate_signed_url(
+            version="v4", expiration=datetime.timedelta(minutes=15),
+            method="PUT", content_type=content_type, service_account_email=signer_email
+        )
+        
+        download_url = blob.generate_signed_url(
+            version="v4", expiration=datetime.timedelta(days=1),
+            method="GET", service_account_email=signer_email
+        )
+        
+        return jsonify({
+            "upload_url": upload_url, "download_url": download_url,
+            "blob_name": blob_name, "bucket": BUCKET_NAME
+        })
+    except Exception as e:
+        return jsonify({"error": "Failed to generate signed URL", "message": str(e)}), 500
+
+@app.route("/confirm-upload", methods=["POST"])
+@require_auth
+async def confirm_upload():
+    """Confirm file upload and store its metadata in the database."""
+    data = await request.json
+    blob_name = data.get("blob_name")
+    session_id = data.get("session_id")
+    original_filename = data.get("original_filename")
+    
+    if not all([blob_name, session_id, original_filename]):
+        return jsonify({"error": "blob_name, session_id, and original_filename are required"}), 400
+    
+    file_url = f"gs://{BUCKET_NAME}/{blob_name}"
+    async with engine.begin() as conn:
+        await conn.execute(
+            text("""
+                INSERT INTO messages (session_id, role, text_content, file_url) 
+                VALUES (:session_id, 'user', :filename, :file_url)
+            """),
+            {"session_id": session_id, "filename": f"📎 {original_filename}", "file_url": file_url}
+        )
+    
+    return jsonify({"message": "File upload confirmed", "file_url": file_url})
+
         
 @app.route("/health", methods=["GET"])
 async def health_check():
@@ -295,52 +357,6 @@ async def health_check_db():
         return jsonify({"status": "healthy", "database": "connected"})
     except Exception as e:
         return jsonify({"status": "unhealthy", "error": str(e)}), 500
-
-@app.route("/upload-file", methods=["POST"])
-@require_auth
-async def upload_file():
-    """
-    Handles file uploads by saving them to GCS.
-    """
-    try:
-        form = await request.form
-        session_id = form.get("session_id")
-        if not session_id:
-            return jsonify({"error": "session_id is required"}), 400
-
-        files = await request.files
-        uploaded_file = files.get("file")
-        if not uploaded_file or not uploaded_file.filename:
-            return jsonify({"error": "File part is missing or empty"}), 400
-
-        blob_name = f"uploads/{session_id}/{uuid.uuid4()}-{uploaded_file.filename}"
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(blob_name)
-        
-        # Upload directly from the in-memory file object
-        file_content = await uploaded_file.read()
-        blob.upload_from_string(file_content, content_type=uploaded_file.content_type)
-        
-        app.logger.info(f"File uploaded to GCS bucket '{BUCKET_NAME}' as '{blob_name}'")
-        
-        file_url = f"gs://{BUCKET_NAME}/{blob_name}"
-        async with engine.begin() as conn:
-            await conn.execute(
-                text("""
-                    INSERT INTO messages (session_id, role, text_content, file_url) 
-                    VALUES (:session_id, 'user', :filename, :file_url)
-                """),
-                {"session_id": session_id, "filename": f"📎 {uploaded_file.filename}", "file_url": file_url}
-            )
-        
-        return jsonify({
-            "message": "File uploaded successfully",
-            "file_url": file_url
-        }), 201
-
-    except Exception as e:
-        app.logger.error(f"File upload failed: {e}")
-        return jsonify({"error": "An internal server error occurred during file upload"}), 500
 
 @app.route("/submit-idea", methods=["POST"])
 @require_auth
@@ -535,7 +551,7 @@ async def compare_ideas():
             if not api_key:
                 return jsonify({"error": "Gemini API key not configured"}), 500
             genai.configure(api_key=api_key)
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            model = genai.GenerativeModel('gemini-2.5-flash')
 
             prompt = f"""
             Please compare these two ideas in a structured format:

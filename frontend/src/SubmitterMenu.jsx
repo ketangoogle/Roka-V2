@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 
-const BACKEND_URL = 'https://roka-agent-backend-684535434104.us-central1.run.app'; // <-- CORRECTED
+const BACKEND_URL = 'https://roka-agent-backend-684535434104.us-central1.run.app';
 const AUTH_HEADER = { 'Authorization': 'Basic YWRtaW46cGFzc3dvcmRAMTIz' };
 
 const SubmitIcon = () => (

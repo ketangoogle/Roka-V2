@@ -1,422 +1,155 @@
-import React, { useState, useEffect } from 'react';
-import Notification from './Notification';
-import ReactMarkdown from 'react-markdown';
+import { LiveKitRoom } from "@livekit/components-react";
+import "@livekit/components-styles";
+import { VoiceAssistant } from "./VoiceAssistant";
+import { IdeasList } from "./IdeasList";
+import RoleSelection from "./RoleSelection";
+import Login from "./Login";
+import AdminLogin from "./AdminLogin";
+import SubmitterMenu from "./SubmitterMenu";
+import "./App.css";
+import { useState, useCallback } from "react";
 
-const BACKEND_URL = 'https://roka-agent-backend-684535434104.us-central1.run.app'; // <-- CORRECTED
+const BACKEND_URL = 'https://roka-agent-backend-684535434104.us-central1.run.app';
+const VITE_LIVEKIT_URL='wss://voice-agent-km9i6pp0.livekit.cloud';
+
 const AUTH_HEADER = { 'Authorization': 'Basic YWRtaW46cGFzc3dvcmRAMTIz' };
 const AUTH_JSON_HEADER = { ...AUTH_HEADER, 'Content-Type': 'application/json' };
 
-const DownloadIcon = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" fill="currentColor" viewBox="0 0 16 16">
-    <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
-    <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
-  </svg>
-);
+function App() {
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [appState, setAppState] = useState('ROLE_SELECTION');
+  const [userRole, setUserRole] = useState(null);
+  const [loggedInUser, setLoggedInUser] = useState(null);
+  const [token, setToken] = useState(null);
+  const [sessionId, setSessionId] = useState(null);
+  const [isConnecting, setIsConnecting] = useState(false);
 
-const IdeaCard = ({ idea }) => {
-  const getStatusInfo = (approved) => {
-    if (approved === true) return { text: 'Approved', className: 'approved' };
-    if (approved === false) return { text: 'Rejected', className: 'rejected' };
-    return { text: 'Submitted', className: 'submitted' };
-  };
-  const getUrgencyInfo = (urgency) => {
-    const u = (urgency || "").toLowerCase();
-    if (u === 'high') return { text: 'High', className: 'high' };
-    if (u === 'medium') return { text: 'Medium', className: 'medium' };
-    return { text: 'Low', className: 'low' };
+  const handleRoleSelect = (role) => {
+    setUserRole(role);
+    setAppState('LOGIN');
   };
 
-  const status = getStatusInfo(idea.approved);
-  const urgency = getUrgencyInfo(idea.urgency);
+  const handleLoginSuccess = (userId) => {
+    setLoggedInUser(userId);
+    setAppState(userRole === 'submitter' ? 'SUBMITTER_MENU' : 'REVIEWER_DASHBOARD');
+  };
 
-  return (
-    <div className="idea-card">
-      <div className={`idea-card-sidebar ${status.className}`}></div>
-      <div className="idea-card-main">
-        <div className="idea-card-header">
-        <span className="idea-icon">💡</span>
-          <h3 className="idea-title">{idea.idea_title}</h3>
-          <div className="idea-card-meta">
-            <span className={`urgency-badge ${urgency.className}`}>{urgency.text}</span>
-            <span className={`status-badge ${status.className}`}>{status.text}</span>
-          </div>
-        </div>
-        <div className="idea-card-content">
-          <p className="idea-explanation">{idea.explanation}</p>
-          <div className="idea-details-grid">
-            <div className="detail-item">
-              <strong>Category</strong>
-              <span>{idea.category}</span>
-            </div>
-            <div className="detail-item">
-              <strong>Impact</strong>
-              <span>{idea.expected_impact || 'N/A'}</span>
-            </div>
-            <div className="detail-item">
-              <strong>Cost</strong>
-              <span>{idea.estimated_cost || 'N/A'}</span>
-            </div>
-          </div>
-        </div>
-        <div className="idea-card-footer">
-          <span>Submitted by: <strong>{idea.created_by}</strong></span>
-          <span>{new Date(idea.submitted_at).toLocaleDateString()}</span>
-        </div>
-      </div>
-    </div>
-  );
-};
+  const handleLogout = () => {
+    setLoggedInUser(null);
+    setUserRole(null);
+    setToken(null);
+    setSessionId(null);
+    setAppState('ROLE_SELECTION');
+  };
 
-export function IdeasList({ isReviewerMode, userId, onBack }) {
-  const [ideas, setIdeas] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [searchTerm, setSearchTerm] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('All');
-  const [sortOrder, setSortOrder] = useState('date-desc');
-  const [reviewingIdea, setReviewingIdea] = useState(null);
-  const [reviewerNotes, setReviewerNotes] = useState('');
-  const [notification, setNotification] = useState('');
-  const [selectedIdeas, setSelectedIdeas] = useState([]);
-  const [isComparing, setIsComparing] = useState(false);
-  const [comparisonResult, setComparisonResult] = useState(null);
-
-  const fetchIdeasAndAttachments = async () => {
-    setLoading(true);
+  const startSessionAndConnect = useCallback(async () => {
+    setIsConnecting(true);
     try {
-      const ideasResponse = await fetch(`${BACKEND_URL}/ideas`, { headers: AUTH_HEADER });
-      if (!ideasResponse.ok) {
-        throw new Error(`Failed to fetch ideas. Status: ${ideasResponse.status}`);
-      }
-      let fetchedIdeas = await ideasResponse.json();
-
-      if (isReviewerMode && fetchedIdeas.length > 0) {
-        const attachmentPromises = fetchedIdeas.map(idea =>
-          fetch(`${BACKEND_URL}/session/${idea.session_id}`, { headers: AUTH_HEADER })
-            .then(res => {
-              if (res.ok) return res.json();
-              console.warn(`Could not fetch history for session ${idea.session_id}`);
-              return [];
-            })
-            .then(history => {
-              const imageUrls = history
-                .filter(msg => msg.file_url && /\.(jpg|jpeg|png|gif|webp)(\?|$)/i.test(msg.file_url))
-                .map(msg => msg.file_url);
-              return { ...idea, image_urls: imageUrls };
-            })
-        );
-        fetchedIdeas = await Promise.all(attachmentPromises);
-      }
-      
-      setIdeas(fetchedIdeas);
-
-    } catch (error)      {
-      console.error('Error during data fetching:', error);
-      setNotification('An error occurred while fetching the list of ideas.');
-    } finally {
-      setLoading(false);
-    }
-  };
-  
-  useEffect(() => {
-    fetchIdeasAndAttachments();
-  }, [isReviewerMode]);
-
-  const handleReviewSubmit = async () => {
-    if (!reviewingIdea) return;
-    if (!reviewerNotes) {
-      setNotification("A reviewer note is required to approve or reject an idea.");
-      return;
-    }
-    try {
-      const response = await fetch(`${BACKEND_URL}/submit-idea`, {
-        method: 'POST',
+      const sessionResponse = await fetch(`${BACKEND_URL}/session`, {
+        method: "POST",
         headers: AUTH_JSON_HEADER,
-        body: JSON.stringify({
-          idea_id: reviewingIdea.id,
-          approved: reviewingIdea.approved,
-          reviewer_notes: reviewerNotes
-        })
+        body: JSON.stringify({ user_id: loggedInUser }),
       });
-
-      if (response.ok) {
-        setNotification(`Idea successfully ${reviewingIdea.approved ? 'approved' : 'rejected'}.`);
-        setReviewingIdea(null);
-        setReviewerNotes('');
-        fetchIdeasAndAttachments(); 
-      } else {
-        const errorData = await response.json();
-        setNotification(`Failed to update idea: ${errorData.error}`);
-      }
-    } catch (error) {
-      setNotification('An error occurred while submitting the review.');
-    }
-  };
-
-  const handleDownload = async (imageUrl) => {
-    setNotification('Preparing download...');
-    try {
-      const response = await fetch(imageUrl);
-      if (!response.ok) throw new Error('Network response was not ok');
-      const blob = await response.blob();
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      const url = new URL(imageUrl);
-      const filename = url.pathname.split('/').pop();
-      link.download = filename || 'downloaded-image.jpg';
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(link.href);
-      setNotification('');
-    } catch (error) {
-      console.error('Download failed:', error);
-      setNotification('Failed to download the image.');
-    }
-  };
-
-  const handleIdeaSelect = (ideaId) => {
-    setSelectedIdeas(prevSelected => {
-      if (prevSelected.includes(ideaId)) {
-        return prevSelected.filter(id => id !== ideaId);
-      }
-      if (prevSelected.length < 2) {
-        return [...prevSelected, ideaId];
-      }
-      setNotification("You can only select up to 2 ideas to compare.");
-      return prevSelected;
-    });
-  };
-
-  const handleCompareIdeas = async () => {
-    if (selectedIdeas.length !== 2) {
-      setNotification("Please select exactly two ideas to compare.");
-      return;
-    }
-    setIsComparing(true);
-    setComparisonResult(null);
-    try {
-      const idea1 = ideas.find(i => i.id === selectedIdeas[0]);
-      const idea2 = ideas.find(i => i.id === selectedIdeas[1]);
+      if (!sessionResponse.ok) throw new Error("Failed to create a session.");
+      const { id: newSessionId } = await sessionResponse.json();
       
-      const response = await fetch(`${BACKEND_URL}/compare-ideas`, {
-        method: 'POST',
-        headers: AUTH_JSON_HEADER,
-        body: JSON.stringify({ idea1, idea2 })
-      });
+      const tokenResponse = await fetch(
+        `${BACKEND_URL}/getToken?session_id=${newSessionId}&name=${encodeURIComponent(loggedInUser)}`,
+        { headers: AUTH_HEADER }
+      );
+      if (!tokenResponse.ok) throw new Error("Failed to fetch token.");
+      const { token: newToken } = await tokenResponse.json();
       
-      const result = await response.json();
-      if (response.ok) {
-        setComparisonResult(result);
-      } else {
-        throw new Error(result.error || 'Failed to get comparison from server.');
-      }
+      setSessionId(newSessionId);
+      setToken(newToken);
+      setAppState('VOICE_AGENT');
     } catch (error) {
-      console.error('Error comparing ideas:', error);
-      setNotification(`Comparison failed: ${error.message}`);
+      console.error("Connection process failed:", error);
+      alert("Could not connect to the agent.");
     } finally {
-      setIsComparing(false);
+      setIsConnecting(false);
     }
+  }, [loggedInUser]);
+
+  const handleJoinSession = useCallback(async (existingSessionId) => {
+    setIsConnecting(true);
+    try {
+      const tokenResponse = await fetch(
+        `${BACKEND_URL}/getToken?session_id=${existingSessionId}&name=${encodeURIComponent(loggedInUser)}`,
+        { headers: AUTH_HEADER }
+      );
+      if (!tokenResponse.ok) throw new Error("Failed to fetch token.");
+      const { token: existingToken } = await tokenResponse.json();
+
+      setSessionId(existingSessionId);
+      setToken(existingToken);
+      setAppState('VOICE_AGENT');
+    } catch (error) {
+      console.error("Join session failed:", error);
+      alert("Could not join the session.");
+    } finally {
+      setIsConnecting(false);
+    }
+  }, [loggedInUser]);
+
+  const handleDisconnect = () => {
+    setToken(null);
+    setSessionId(null);
+    setAppState('SUBMITTER_MENU');
   };
 
-  const filteredAndSortedIdeas = ideas
-    .filter(idea => {
-      if (!isReviewerMode && idea.approved !== true) {
-        return false;
-      }
-      const searchLower = searchTerm.toLowerCase();
-      const titleMatch = idea.idea_title.toLowerCase().includes(searchLower);
-      const contributorMatch = idea.created_by && idea.created_by.toLowerCase().includes(searchLower);
-      const categoryMatch = categoryFilter === 'All' || (idea.category && idea.category.toLowerCase() === categoryFilter.toLowerCase());
-      return (titleMatch || contributorMatch) && categoryMatch;
-    })
-    .sort((a, b) => {
-      if (sortOrder === 'date-desc') return new Date(b.submitted_at) - new Date(a.submitted_at);
-      if (sortOrder === 'date-asc') return new Date(a.submitted_at) - new Date(b.submitted_at);
-      if (sortOrder === 'urgency') {
-        const order = { high: 3, medium: 2, low: 1 };
-        const urgencyA = (a.urgency || "").toLowerCase();
-        const urgencyB = (b.urgency || "").toLowerCase();
-        return (order[urgencyB] || 0) - (order[urgencyA] || 0);
-      }
-      return 0;
-    });
-
-  return (
-    <div className="dashboard-container">
-      <Notification message={notification} onClose={() => setNotification('')} />
-
-      <div className="dashboard-header">
-        <h1>{isReviewerMode ? 'Idea Reviewer Dashboard' : 'Explore Ideas Submitted'}</h1>
-        <button className="back-button logout-button" onClick={onBack}>{isReviewerMode ? 'Logout' : 'Back to Menu'}</button>
+  const AppNavbar = ({ user, role }) => (
+    <header className="app-navbar">
+      <div className="navbar-welcome">
+        Welcome, <strong>{user}</strong>. Have a productive day!
       </div>
-      
-      <div className="filters">
-        <input type="text" placeholder="Search ideas..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
-        <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
-          <option value="All">All Categories</option>
-          <option value="Kitchen">Kitchen</option>
-          <option value="Housekeeping">Housekeeping</option>
-          <option value="Operations">Operations</option>
-          <option value="Maintenance">Maintenance</option>
-        </select>
-        <select value={sortOrder} onChange={(e) => setSortOrder(e.target.value)}>
-          <option value="date-desc">Newest First</option>
-          <option value="date-asc">Oldest First</option>
-          <option value="urgency">By Urgency</option>
-        </select>
+      <div className="navbar-brand">
+        <span>{role === 'submitter' ? 'Idea Submitter' : 'Idea Reviewer'}</span>
       </div>
-
-      {isReviewerMode && (
-        <div className="compare-actions">
-          <button
-            className="action-button"
-            onClick={handleCompareIdeas}
-            disabled={selectedIdeas.length !== 2 || isComparing}
-          >
-            {isComparing ? 'Comparing...' : 'Compare 2 Selected Ideas'}
-          </button>
-          {selectedIdeas.length > 0 && (
-            <button className="clear-selection-btn" onClick={() => setSelectedIdeas([])}>
-              Clear Selection
-            </button>
-          )}
-        </div>
-      )}
-
-      {loading ? <p className="loading-state">Loading ideas...</p> : (
-        isReviewerMode ? (
-          <div className="table-wrapper">
-            <table className="idea-table">
-              <thead>
-                <tr>
-                  <th className="col-select"></th>
-                  <th className="col-contributor">Contributor</th>
-                  <th className="col-idea">Idea Proposal</th>
-                  <th className="col-details">Details</th>
-                  <th className="col-submitted">Submitted</th>
-                  <th className="col-attachments">Attachments</th>
-                  <th className="col-actions">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredAndSortedIdeas.length > 0 ? (
-                  filteredAndSortedIdeas.map((idea) => (
-                    <tr key={idea.id}>
-                      <td className="col-select">
-                        <input
-                          type="checkbox"
-                          checked={selectedIdeas.includes(idea.id)}
-                          onChange={() => handleIdeaSelect(idea.id)}
-                          disabled={selectedIdeas.length >= 2 && !selectedIdeas.includes(idea.id)}
-                        />
-                      </td>
-                      <td className="col-contributor">{idea.created_by}</td>
-                      <td className="col-idea">
-                        <div className="idea-cell-motive"><strong>Motive:</strong> {idea.idea_title}</div>
-                        <div className="idea-cell-solution"><strong>Solution:</strong> {idea.explanation}</div>
-                      </td>
-                      <td className="col-details">
-                        <div className="details-cell">
-                          <div><strong>Category:</strong> {idea.category}</div>
-                          <div><strong>Urgency:</strong> {idea.urgency}</div>
-                          <div><strong>Impact:</strong> {idea.expected_impact || 'N/A'}</div>
-                          <div><strong>Cost:</strong> {idea.estimated_cost || 'N/A'}</div>
-                        </div>
-                      </td>
-                      <td className="col-submitted">{new Date(idea.submitted_at).toLocaleDateString()}</td>
-                      <td className="col-attachments">
-                        {idea.image_urls && idea.image_urls.length > 0 ? (
-                          <div className="attachment-links">
-                            {idea.image_urls.map((url, index) => (
-                              <button key={index} className="download-button" title={`Download Image ${index + 1}`} onClick={() => handleDownload(url)}>
-                                <DownloadIcon />
-                              </button>
-                            ))}
-                          </div>
-                        ) : ( '—' )}
-                      </td>
-                      <td className="col-actions">
-                        <div className="actions-cell">
-                          <div className="reviewer-note-display">
-                            <strong>Note:</strong> {idea.reviewer_notes || '—'}
-                          </div>
-                          <div className="action-buttons-container">
-                            {idea.approved === null || idea.approved === undefined ? (
-                              <div className="action-buttons">
-                                <button className="approve-btn" onClick={() => setReviewingIdea({ ...idea, approved: true })}>Approve</button>
-                                <button className="reject-btn" onClick={() => setReviewingIdea({ ...idea, approved: false })}>Reject</button>
-                              </div>
-                            ) : (
-                              <span className={`status-text ${idea.approved ? 'approved' : 'rejected'}`}>
-                                {idea.approved ? 'Approved' : 'Rejected'}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr><td colSpan="7" style={{ textAlign: 'center' }}>No ideas found.</td></tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="ideas-grid">
-            {filteredAndSortedIdeas.length > 0 ? (
-              filteredAndSortedIdeas.map(idea => <IdeaCard key={idea.id} idea={idea} />)
-            ) : <p className="no-ideas-message">No approved ideas found.</p>}
-          </div>
-        )
-      )}
-
-      {reviewingIdea && (
-        <div className="modal-overlay">
-          <div className="modal review-modal">
-            <h3>{reviewingIdea.approved ? 'Approve' : 'Reject'} Idea #{reviewingIdea.id}</h3>
-            <div className="modal-content">
-              <label htmlFor="reviewerNotes">Add Reviewer Note (Required):</label>
-              <textarea 
-                id="reviewerNotes"
-                value={reviewerNotes} 
-                onChange={(e) => setReviewerNotes(e.target.value)} 
-                rows="4" 
-              />
-            </div>
-            <div className="modal-actions">
-              <button className="cancel-btn" onClick={() => setReviewingIdea(null)}>Cancel</button>
-              <button 
-                className={reviewingIdea.approved ? 'approve-btn' : 'reject-btn'} 
-                onClick={handleReviewSubmit}
-              >
-                Submit {reviewingIdea.approved ? 'Approval' : 'Rejection'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {comparisonResult && (
-        <div className="modal-overlay">
-          <div className="modal review-modal comparison-modal">
-            <h3>Comparison: {comparisonResult.idea1_title} vs. {comparisonResult.idea2_title}</h3>
-            <div className="modal-content">
-              <div className="comparison-text">
-                <ReactMarkdown>{comparisonResult.comparison}</ReactMarkdown>
-              </div>
-            </div>
-            <div className="modal-actions">
-              <button 
-                className="action-button"
-                onClick={() => setComparisonResult(null)}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
+    </header>
   );
+
+  const renderContent = () => {
+    if (!isAdminAuthenticated) {
+      return <AdminLogin onLoginSuccess={() => setIsAdminAuthenticated(true)} />;
+    }
+
+    const fullScreenStates = ['ROLE_SELECTION', 'LOGIN', 'VOICE_AGENT'];
+    if (fullScreenStates.includes(appState)) {
+      switch (appState) {
+        case 'LOGIN':
+          return <Login userRole={userRole} onLoginSuccess={handleLoginSuccess} onBack={() => setAppState('ROLE_SELECTION')} />;
+        case 'VOICE_AGENT':
+          return token ? (
+            <LiveKitRoom serverUrl={VITE_LIVEKIT_URL} token={token} connect={true} video={false} audio={true} onDisconnected={handleDisconnect}>
+              <VoiceAssistant sessionId={sessionId} userId={loggedInUser} />
+            </LiveKitRoom>
+          ) : <div className="pre-connection-view"><p>{isConnecting ? "Connecting..." : "Preparing session..."}</p></div>;
+        default:
+          return <RoleSelection onSelectRole={handleRoleSelect} />;
+      }
+    }
+
+    return (
+      <div className="app-layout">
+        <AppNavbar user={loggedInUser} role={userRole} />
+        <main className="app-content">
+          {appState === 'SUBMITTER_MENU' && 
+            <SubmitterMenu 
+              loggedInUser={loggedInUser}
+              onStartSubmit={startSessionAndConnect} 
+              onJoinSession={handleJoinSession}
+              onExplore={() => setAppState('EXPLORE_IDEAS')}
+              onLogout={handleLogout} 
+            />}
+          {appState === 'EXPLORE_IDEAS' && <IdeasList isReviewerMode={false} userId={loggedInUser} onBack={() => setAppState('SUBMITTER_MENU')} />}
+          {appState === 'REVIEWER_DASHBOARD' && <IdeasList isReviewerMode={true} onBack={handleLogout} />}
+        </main>
+      </div>
+    );
+  };
+
+  return <div className="fullscreen-app">{renderContent()}</div>;
 }
+
+export default App;
