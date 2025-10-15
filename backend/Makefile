@@ -5,7 +5,7 @@ export
 PROJECT_ID=mvsargotaj
 REGION=us-central1
 REPO_NAME=roka-agent-backend-v2
-SERVICE_ACCOUNT= "684535434104-compute@developer.gserviceaccount.com"
+SERVICE_ACCOUNT="684535434104-compute@developer.gserviceaccount.com"
 
 # Services
 API_SERVICE_NAME=roka-agent-backend

@@ -265,7 +265,6 @@ async def get_session_history(session_id):
                         version="v4",
                         expiration=datetime.timedelta(days=1),
                         method="GET",
-                        service_account_email=signer_email
                     )
                     row_dict["file_url"] = signed_url
                 except Exception as e:
