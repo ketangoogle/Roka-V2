@@ -1,7 +1,8 @@
 import os
 import uuid
 import datetime
-from quart import Quart, request, jsonify
+from quart import Quart, request, jsonify,Blueprint
+import traceback
 from dotenv import load_dotenv
 from quart_cors import cors
 from livekit import api
@@ -12,6 +13,7 @@ from db_schema import metadata
 from google.cloud import storage
 import google.generativeai as genai
 from functools import wraps
+from google.auth import default
 
 load_dotenv()
 app = Quart(__name__)
@@ -275,43 +277,96 @@ async def get_session_history(session_id):
         return jsonify(processed_messages)
 
 
-@app.route("/generate-upload-url", methods=["POST"])
-@require_auth
-async def generate_upload_url():
-    """Generate a signed URL for uploading a file to GCS."""
-    data = await request.json
-    file_name = data.get("file_name")
-    session_id = data.get("session_id")
-    content_type = data.get("content_type", "application/octet-stream")
-    
-    if not file_name:
-        return jsonify({"error": "file_name is required"}), 400
-    
-    try:
-        blob_name = f"uploads/{session_id}/{uuid.uuid4()}-{file_name}"
-        bucket = storage_client.bucket(BUCKET_NAME)
-        blob = bucket.blob(blob_name)
-        
-        signer_email = os.getenv("SIGNER_SERVICE_ACCOUNT_EMAIL")
-        if not signer_email:
-            raise ValueError("SIGNER_SERVICE_ACCOUNT_EMAIL environment variable not set.")
+# @app.route("/generate-upload-url", methods=["POST"])
+# @require_auth
+# async def generate_upload_url():
+#     """Generate a signed URL for uploading a file to GCS (works on Cloud Run and local)."""
+#     data = await request.json
+#     file_name = data.get("file_name")
+#     session_id = data.get("session_id")
+#     content_type = data.get("content_type", "application/octet-stream")
 
-        upload_url = blob.generate_signed_url(
-            version="v4", expiration=datetime.timedelta(minutes=15),
-            method="PUT", content_type=content_type, service_account_email=signer_email
+#     if not file_name:
+#         return jsonify({"error": "file_name is required"}), 400
+
+#     try:
+#         from google.auth import default
+#         from google.cloud import storage
+
+#         creds, project = default()  # use Cloud Run's service account or local ADC
+#         storage_client = storage.Client(credentials=creds, project=project)
+
+#         blob_name = f"uploads/{session_id}/{uuid.uuid4()}-{file_name}"
+#         bucket = storage_client.bucket(BUCKET_NAME)
+#         blob = bucket.blob(blob_name)
+
+#         # generate signed upload URL using IAM SignBlob (works inside Cloud Run)
+#         upload_url = blob.generate_signed_url(
+#             version="v4",
+#             expiration=datetime.timedelta(minutes=15),
+#             method="PUT",
+#             content_type=content_type,
+#         )
+
+#         # generate signed download URL (GET)
+#         download_url = blob.generate_signed_url(
+#             version="v4",
+#             expiration=datetime.timedelta(days=1),
+#             method="GET",
+#         )
+
+#         return jsonify({
+#             "upload_url": upload_url,
+#             "download_url": download_url,
+#             "blob_name": blob_name,
+#             "bucket": BUCKET_NAME
+#         })
+
+#     except Exception as e:
+#         import traceback
+#         print("❌ Error generating signed URL:", traceback.format_exc())
+#         return jsonify({
+#             "error": "Failed to generate signed URL",
+#             "message": str(e)
+#         }), 500
+upload_bp = Blueprint("upload_bp", __name__)
+
+@upload_bp.route("/generate-upload-url", methods=["POST"])
+async def generate_upload_url():
+    try:
+        data = await request.get_json()
+        file_name = data.get("file_name")
+
+        if not file_name:
+            return jsonify({"error": "Missing file_name"}), 400
+
+        bucket_name = os.getenv("GCS_BUCKET_NAME", "YOUR_BUCKET_NAME")
+
+        # Let Cloud Run use default service account creds automatically
+        if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            print("⚙️ Using default Cloud Run credentials")
+
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(file_name)
+
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=datetime.timedelta(minutes=15),
+            method="PUT",
+            content_type="application/octet-stream",
         )
-        
-        download_url = blob.generate_signed_url(
-            version="v4", expiration=datetime.timedelta(days=1),
-            method="GET", service_account_email=signer_email
-        )
-        
-        return jsonify({
-            "upload_url": upload_url, "download_url": download_url,
-            "blob_name": blob_name, "bucket": BUCKET_NAME
-        })
+
+        print(f"✅ Generated signed URL for {file_name}")
+        return jsonify({"upload_url": url})
+
     except Exception as e:
-        return jsonify({"error": "Failed to generate signed URL", "message": str(e)}), 500
+        print("❌ Error generating signed URL:", e)
+        print(traceback.format_exc())  # this will appear in Cloud Run logs
+        return jsonify({
+            "error": str(e),
+            "trace": traceback.format_exc(),
+        }), 500
 
 @app.route("/confirm-upload", methods=["POST"])
 @require_auth
